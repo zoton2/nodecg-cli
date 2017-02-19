@@ -1,0 +1,13 @@
+#cloud-config
+users:
+  - name: nodecg-user
+    groups: sudo
+    shell: /bin/bash
+    sudo: ['ALL=(ALL) NOPASSWD:ALL']
+runcmd:
+  # Disallow root login for security purposes. There should be no need to log in as root on a NodeCG box.
+  - sed -i -e '/^PermitRootLogin/s/^.*$/PermitRootLogin no/' /etc/ssh/sshd_config
+  # Explicitly permit the "nodecg-user" user to log in.
+  - sed -i -e '$aAllowUsers nodecg-user' /etc/ssh/sshd_config
+  # Restart SSH to apply the changes made to sshd_config
+  - restart ssh
