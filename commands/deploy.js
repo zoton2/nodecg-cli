@@ -11,6 +11,8 @@ const GitHubApi = require('github');
 const hostedGitInfo = require('hosted-git-info');
 const request = require('request-promise');
 const semver = require('semver');
+const NodeSSH = require('node-ssh');
+const generatePassword = require('password-generator');
 
 // Ours
 const CloudConfig = require('../lib/cloud-config');
@@ -18,11 +20,16 @@ const cfg = require('../lib/cfg');
 const getPublicKey = require('../lib/get-public-key');
 const getBitBucketCredentials = require('../lib/get-bitbucket-credentials');
 const getGitHubCredentials = require('../lib/get-github-credentials');
+const getNodecgTarballUrl = require('../lib/get-nodecg-tarball-url');
 
+const ssh = new NodeSSH();
 const config = cfg.read();
 const github = new GitHubApi();
 const unauthenticatedBitbucket = bitbucketjs();
+const sshPassword = generatePassword(32, false);
 const DROPLET_USERNAME = 'nodecg-user';
+const NODECG_DIR = `/home/${DROPLET_USERNAME}/nodecg`;
+const BUNDLES_DIR = `${NODECG_DIR}/bundles`;
 
 module.exports = function (program) {
 	program
@@ -38,19 +45,82 @@ function action(filePath) {
 	const digitalOceanApi = new DigitalOcean('[api_key]');
 	let credentials;
 
-	gatherNeededCredentials(deploymentDefinition)
-		.then(creds => {
-			credentials = creds;
-			return gatherDownloadUrls(deploymentDefinition, credentials);
-		})
-		.then(deploymentDefinitionWithDownloadUrls => {
-			const cloudConfig = generateCloudConfig(deploymentDefinitionWithDownloadUrls, credentials);
-			console.log(JSON.stringify(cloudConfig.json, null, 2));
-			console.log('\n\n');
-			console.log(cloudConfig.dump());
-		}).catch(error => {
-			console.error(error);
+	gatherNeededCredentials(deploymentDefinition).then(creds => {
+		credentials = creds;
+		return gatherDownloadUrls(deploymentDefinition, credentials);
+	}).then(deploymentDefinitionWithDownloadUrls => {
+		return generateCloudConfig(deploymentDefinitionWithDownloadUrls, credentials);
+	}).then(cloudConfig => {
+		console.log(JSON.stringify(cloudConfig.json, null, 2));
+		console.log('\n\n');
+		console.log(cloudConfig.dump());
+
+		// TODO: Have a timeout for this
+		// TODO: handle errors here
+		return new Promise(resolve => {
+			ssh.connect({
+				host: 'localhost',
+				username: 'nodecg-user',
+				password: sshPassword
+			}).then(() => {
+				// Check every 2.5s
+				const interval = setInterval(() => {
+					isBootFinished(ssh).then(isFinished => {
+						if (isFinished) {
+							clearInterval(interval);
+							resolve();
+						}
+					});
+				}, 2500);
+			});
+		}).then(() => {
+			// Completely disable PasswordAuthentication, now that we're done with it.
+			// The user is expected to always login via publickey auth.
+			return new Promise((resolve, reject) => {
+				ssh.execCommand(
+					`sed -i -e '/^PasswordAuthentication/s/^.*$/PasswordAuthentication no/' /etc/ssh/sshd_config`
+				).then(result => {
+					if (result.stderr) {
+						reject(result.stderr);
+					} else {
+						resolve(result.stdout);
+					}
+				});
+			});
 		});
+
+		/*
+		1. Make the Block Storage volume if it doesn't yet exist.
+		2. Make the droplet with name "${name}-staging", but don't attach the volume yet. It will mostly auto-provision thanks to the cloud-init script.
+		3. Wait for the droplet to finish being provisioned. (Don't yet have a good way of signaling when this has happened)
+		4. Assign the Floating IP to the new droplet, and attach the Block Storage volume to it.
+		5. Run a small script that makes a new LE cert *only if* there isn't one already on the volume.
+		6.
+		 */
+	}).catch(error => {
+		console.error(error);
+	});
+}
+
+function isBootFinished(ssh) {
+	return new Promise((resolve, reject) => {
+		ssh.execCommand(
+			'[ -f /var/lib/cloud/data/result.json ] && cat /var/lib/cloud/data/result.json || echo "Not found"'
+		).then(result => {
+			if (result.stdout === 'Not found') {
+				resolve(false);
+			} else if (result.stdout) {
+				const resultJson = JSON.parse(result.stdout);
+				if (resultJson.errors && resultJson.errors.length > 0) {
+					reject(resultJson.errors);
+				} else {
+					resolve();
+				}
+			}
+
+			reject(result.stderr);
+		});
+	});
 }
 
 function parseBundles(deploymentDefinition) {
@@ -213,27 +283,50 @@ function gatherDownloadUrls(deploymentDefinition, credentials) {
 	});
 }
 
+// TODO: Files should be owned by DROPLET_USERNAME
 function generateCloudConfig(deploymentDefinitionWithDownloadUrls, credentials) {
 	const cloudConfig = new CloudConfig('templates/cloud-config.yml');
 
 	cloudConfig.addSshKey(DROPLET_USERNAME, credentials.publickey);
+	cloudConfig.addPassword(DROPLET_USERNAME, sshPassword);
 
-	deploymentDefinitionWithDownloadUrls.bundles.forEach(bundle => {
-		cloudConfig.addDownload(bundle.downloadUrl, {
-			dest: `/home/${DROPLET_USERNAME}/${bundle.name}.zip`,
-			unzip: true,
-			auth: {
-				username: credentials.bitbucket.username,
-				password: credentials.bitbucket.password
+	if (deploymentDefinitionWithDownloadUrls.nodecg.config) {
+		cloudConfig.addWriteFile(`${NODECG_DIR}/cfg/nodecg.json`, deploymentDefinitionWithDownloadUrls.nodecg.config);
+	}
+
+	cloudConfig.replace('{{nodejs_version}}', deploymentDefinitionWithDownloadUrls.nodejs_version || latest);
+	cloudConfig.replace('{{domain}}', deploymentDefinitionWithDownloadUrls.domain);
+	cloudConfig.replace('{{port}}', deploymentDefinitionWithDownloadUrls.nodecg.port || 9090);
+	cloudConfig.replace('{{email}}', deploymentDefinitionWithDownloadUrls.email);
+
+	// Download NodeCG
+	return getNodecgTarballUrl(deploymentDefinitionWithDownloadUrls.nodecg.version).then(nodecgTarballUrl => {
+		cloudConfig.addDownload(nodecgTarballUrl, {
+			dest: `/home/${DROPLET_USERNAME}/nodecg.zip`,
+			unpack: true
+		});
+
+		deploymentDefinitionWithDownloadUrls.bundles.forEach(bundle => {
+			cloudConfig.addDownload(bundle.downloadUrl, {
+				dest: `${BUNDLES_DIR}/${bundle.name}.zip`,
+				unpack: true,
+				auth: {
+					username: credentials.bitbucket.username,
+					password: credentials.bitbucket.password
+				}
+			});
+
+			// BitBucket's zips have a folder within them with the name ${user}-${repo}-${hash},
+			// so we need to rename this folder to just be ${repo}.
+			if (bundle.hostedGitInfo.type === 'bitbucket') {
+				cloudConfig.addCommand(`find ${BUNDLES_DIR}/* -maxdepth 0 -type d -name "*${bundle.name}*" -execdir mv {} ${bundle.name} \\;`);
+			}
+
+			if (bundle.config) {
+				cloudConfig.addWriteFile(`${NODECG_DIR}/cfg/${bundle.name}.json`, bundle.config);
 			}
 		});
 
-		// BitBucket's zips have a folder within them with the name ${user}-${repo}-${hash},
-		// so we need to rename this folder to just be ${repo}.
-		if (bundle.hostedGitInfo.type === 'bitbucket') {
-			cloudConfig.addCommand(`find * -maxdepth 0 -type d -name "*${bundle.name}*" -execdir mv {} ${bundle.name} \\;`);
-		}
+		return cloudConfig;
 	});
-
-	return cloudConfig;
 }
