@@ -6,32 +6,28 @@ packages:
   - nginx
   - letsencrypt
 users:
-  - name: nodecg-user
+  - name: nodecg
     groups: sudo
     shell: /bin/bash
     sudo: ['ALL=(ALL) NOPASSWD:ALL']
-    lock_passwd: false
-    # Only used during setup, after which PasswordAuthentication is disabled in sshd_config
-    passwd: {{setup_user_password_hash}}
 
 runcmd:
   # Disallow root login for security purposes. There should be no need to log in as root on a NodeCG box.
   - sed -i -e '/^PermitRootLogin/s/^.*$/PermitRootLogin no/' /etc/ssh/sshd_config
-  # Explicitly permit the "nodecg-user" user to log in.
-  - sed -i -e '$aAllowUsers nodecg-user' /etc/ssh/sshd_config
+  # Explicitly permit the "nodecg" user to log in.
+  - sed -i -e '$aAllowUsers nodecg' /etc/ssh/sshd_config
   # Restart SSH to apply the changes made to sshd_config
-  - restart ssh
+  - service sshd restart
   - systemctl stop nginx
-  - letsencrypt certonly --standalone --non-interactive --agree-tos --email {{email}} -d {{domain}}
+  #- letsencrypt certonly --standalone --non-interactive --agree-tos --email {{email}} -d {{domain}}
   - systemctl start nginx
+  - su - nodecg -c 'mkdir ~/nodecg ~/nodecg/cfg ~/nodecg/bundles'
   # Install nvm, which we'll use to install the version of Node.js specified by nodejs_version in the deployment definition.
-  - su - nodecg-user -c 'curl -o- https://raw.githubusercontent.com/creationix/nvm/v0.33.0/install.sh | bash'
-  - su - nodecg-user -c 'nvm install {{nodejs_version}}'
-  - su - nodecg-user -c 'nvm use {{nodejs_version}} > ~/.bashrc'
-  - su - nodecg-user -c 'npm install -g pm2 bower && pm2 start /home/nodecg-user/nodecg/index.js --name=nodecg'
+  - su - nodecg -c 'curl -o- https://raw.githubusercontent.com/creationix/nvm/v0.33.0/install.sh | bash'
+  - su - nodecg -c 'source ~/.bashrc && echo "nvm use {{nodejs_version}}" > ~/.bashrc && nvm install {{nodejs_version}} && npm install -g pm2 bower'
+  - su - nodecg -c 'cd /home/nodecg/nodecg && npm install && bower install && pm2 start /home/nodecg/nodecg/index.js --name=nodecg'
   # pm2 startup
-  - env PATH=$PATH:/usr/bin pm2 startup systemd -u nodecg-user --hp /home/nodecg-user
-  - su - nodecg-user -c 'cd /home/nodecg-user/nodecg && npm install && bower install'
+  - env PATH=$PATH:/usr/bin pm2 startup systemd -u nodecg --hp /home/nodecg
   # TODO: symlink assets, logs, and db folders
 
 write_files:

@@ -40,4 +40,5 @@ Enable `--dev` flag to install the bundle's `devDependencies`.
 config file at `nodecg/cfg/:bundleName.json` with defaults based on that schema.
 
 ## Special Thanks
-This CLI program is based on [Tim Santeford's commander.js starter](https://github.com/tsantef/commander-starter).
+This CLI program is based on [Tim Santeford's commander.js starter](https://github.com/tsantef/commander-starter).  
+Portions of code are adapted from zeit's [`now-cli`](https://github.com/zeit/now-cli).
