@@ -106,22 +106,23 @@ async function action(filePath) {
 
 		const dropletIp = droplet.networks.v4[0].ip_address;
 		const stopSshToDropletSpinner = wait(`ssh to droplet (${dropletIp})`);
-		await new Promise((resolve, reject) => {
-			// Try to connect every 2.5s
-			const interval = setInterval(() => {
-				ssh.connect({
+		await new Promise(async function (resolve, reject) { // eslint-disable-line prefer-arrow-callback
+			let keepTrying = true;
+			do {
+				/* eslint-disable no-loop-func */
+				await ssh.connect({
 					host: dropletIp,
 					username: 'nodecg',
 					privateKey: credentials.keypair.private
 				}).then(() => {
-					clearInterval(interval);
+					keepTrying = false;
 					resolve();
 				}).catch(err => {
-					if (err.code === 'ECONNREFUSED') {
+					if (err.code === 'ECONNREFUSED' || err.code === 'ETIMEDOUT' || err.message === 'Timed out while waiting for handshake') {
 						// retry
 					} else {
 						stopSshToDropletSpinner();
-						clearInterval(interval);
+						keepTrying = false;
 						process.stdout.write(`${chalk.red('✗')} ssh to droplet\n`);
 
 						if (err.code) {
@@ -133,7 +134,8 @@ async function action(filePath) {
 						reject(err);
 					}
 				});
-			}, 2500);
+				/* eslint-enable no-loop-func */
+			} while (keepTrying === true);
 		});
 		stopSshToDropletSpinner();
 		process.stdout.write(`${chalk.cyan('✓')} ssh to droplet\n`);
@@ -370,7 +372,7 @@ function gatherDownloadUrls(deploymentDefinition, credentials) {
 			}).then(json => {
 				const tagNames = json.values.map(tag => tag.name);
 				const target = semver.maxSatisfying(tagNames, bundle.version);
-				bundle.downloadUrl = `https://bitbucket.org/${bundle.hostedGitInfo.user}/${bundle.hostedGitInfo.project}/get/${target}.zip`;
+				bundle.downloadUrl = `https://bitbucket.org/${bundle.hostedGitInfo.user}/${bundle.hostedGitInfo.project}/get/${target}.tar.gz`;
 			});
 		} else if (bundle.hostedGitInfo.type === 'github') {
 			// TODO: actually handle github downloads instead of just having this stub
@@ -410,24 +412,24 @@ function generateCloudConfig(deploymentDefinitionWithDownloadUrls, credentials) 
 	return getNodecgTarballUrl(deploymentDefinitionWithDownloadUrls.nodecg.version).then(nodecgTarballUrl => {
 		cloudConfig.addDownload(nodecgTarballUrl, {
 			dest: `/home/${DROPLET_USERNAME}/nodecg.tar.gz`,
-			unpack: true
+			untar: true,
+			stripComponents: 1,
+			cmdPosition: 0,
+			curlOpts: '-L',
+			extractTo: NODECG_DIR
 		});
 
 		deploymentDefinitionWithDownloadUrls.bundles.forEach(bundle => {
 			cloudConfig.addDownload(bundle.downloadUrl, {
-				dest: `${BUNDLES_DIR}/${bundle.name}.zip`,
-				unpack: true,
+				dest: `${BUNDLES_DIR}/${bundle.name}.tar.gz`,
+				untar: true,
+				stripComponents: 1,
 				auth: {
 					username: credentials.bitbucket.username,
 					password: credentials.bitbucket.password
-				}
+				},
+				extractTo: `${BUNDLES_DIR}/${bundle.name}`
 			});
-
-			// BitBucket's zips have a folder within them with the name ${user}-${repo}-${hash},
-			// so we need to rename this folder to just be ${repo}.
-			if (bundle.hostedGitInfo.type === 'bitbucket') {
-				cloudConfig.addCommand(`find ${BUNDLES_DIR}/* -maxdepth 0 -type d -name "*${bundle.name}*" -execdir mv {} ${bundle.name} \\;`);
-			}
 
 			if (bundle.config) {
 				cloudConfig.addWriteFile(`${NODECG_DIR}/cfg/${bundle.name}.json`, bundle.config);

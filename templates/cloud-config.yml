@@ -5,6 +5,7 @@ packages:
   - build-essential
   - nginx
   - letsencrypt
+
 users:
   - name: nodecg
     groups: sudo
@@ -12,6 +13,8 @@ users:
     sudo: ['ALL=(ALL) NOPASSWD:ALL']
 
 runcmd:
+  # Copy default dotfiles, which for some reason isn't done automatically?
+  - cp -rT /etc/skel /home/nodecg
   # Disallow root login for security purposes. There should be no need to log in as root on a NodeCG box.
   - sed -i -e '/^PermitRootLogin/s/^.*$/PermitRootLogin no/' /etc/ssh/sshd_config
   # Explicitly permit the "nodecg" user to log in.
@@ -21,14 +24,15 @@ runcmd:
   - systemctl stop nginx
   #- letsencrypt certonly --standalone --non-interactive --agree-tos --email {{email}} -d {{domain}}
   - systemctl start nginx
-  - su - nodecg -c 'mkdir ~/nodecg ~/nodecg/cfg ~/nodecg/bundles'
+  - chown -R nodecg:nodecg /home/nodecg/
   # Install nvm, which we'll use to install the version of Node.js specified by nodejs_version in the deployment definition.
-  - su - nodecg -c 'curl -o- https://raw.githubusercontent.com/creationix/nvm/v0.33.0/install.sh | bash'
-  - su - nodecg -c 'source ~/.bashrc && echo "nvm use {{nodejs_version}}" > ~/.bashrc && nvm install {{nodejs_version}} && npm install -g pm2 bower'
-  - su - nodecg -c 'cd /home/nodecg/nodecg && npm install && bower install && pm2 start /home/nodecg/nodecg/index.js --name=nodecg'
+  - >-
+    su - nodecg -c 'curl -o- https://raw.githubusercontent.com/creationix/nvm/v0.33.0/install.sh | bash &&
+    nvm install {{nodejs_version}} && echo "nvm use {{nodejs_version}}" >> ~/.bashrc && npm install -g pm2 bower &&
+    cd /home/nodecg/nodecg && npm install && bower install && pm2 start /home/nodecg/nodecg/index.js --name=nodecg'
   # pm2 startup
   - env PATH=$PATH:/usr/bin pm2 startup systemd -u nodecg --hp /home/nodecg
-  # TODO: symlink assets, logs, and db folders
+  # TODO: symlink assets, logs, and db folders to the volume
 
 write_files:
   # Renews the letsencrypt certificate on the first of every month at 3:30 AM,
