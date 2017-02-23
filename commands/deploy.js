@@ -106,6 +106,7 @@ async function action(filePath) {
 
 		const dropletIp = droplet.networks.v4[0].ip_address;
 		const stopSshToDropletSpinner = wait(`ssh to droplet (${dropletIp})`);
+		// TODO: Have a timeout for this
 		await new Promise(async function (resolve, reject) { // eslint-disable-line prefer-arrow-callback
 			let keepTrying = true;
 			do {
@@ -140,30 +141,48 @@ async function action(filePath) {
 		stopSshToDropletSpinner();
 		process.stdout.write(`${chalk.cyan('✓')} ssh to droplet\n`);
 
-		// TODO: Have a timeout for this
-		// TODO: handle errors here
 		const stopWaitForCloudInitSpinner = wait('Wait for cloud-init to complete on droplet');
-		await new Promise((resolve, reject) => {
-			// Check every 2.5s
-			const interval = setInterval(() => {
-				isBootFinished(ssh).then(isFinished => {
-					if (isFinished) {
-						clearInterval(interval);
-						resolve();
-					}
-				}).catch(errors => {
-					stopWaitForCloudInitSpinner();
-					clearInterval(interval);
-
-					if (Array.isArray(errors)) {
-						error(`cloud-init failed:\n\t${errors.join('\n\t')}`);
-					} else {
-						error(`cloud-init failed:\n\t${errors}`);
-					}
-
-					reject(errors);
+		await new Promise(async function (resolve, reject) { // eslint-disable-line prefer-arrow-callback
+			let keepTrying = true;
+			do {
+				/* eslint-disable no-loop-func */
+				// Wait two seconds
+				await new Promise(resolve => {
+					setTimeout(resolve, 2000);
 				});
-			}, 2500);
+
+				await ssh.execCommand(
+					'[ -f /var/lib/cloud/data/result.json ] && cat /var/lib/cloud/data/result.json || echo "Not found"'
+				).then(result => {
+					if (result.stdout === 'Not found') {
+						return;
+					}
+
+					keepTrying = false;
+
+					if (result.stdout) {
+						try {
+							const resultJson = JSON.parse(result.stdout).v1;
+							if (Array.isArray(resultJson.errors) && resultJson.errors.length > 0) {
+								error(`cloud-init failed:\n\t${resultJson.errors.join('\n\t')}`);
+								return reject();
+							}
+
+							return resolve();
+						} catch (e) {
+							console.log('bad json:', result.stdout);
+							return reject();
+						}
+					}
+
+					error(`cloud-init failed:\n\t${result.stderr}`);
+					reject();
+				}).catch(error => {
+					keepTrying = false;
+					reject(error);
+				});
+				/* eslint-enable no-loop-func */
+			} while (keepTrying === true);
 		});
 		stopWaitForCloudInitSpinner();
 		process.stdout.write(`${chalk.cyan('✓')} Wait for cloud-init to complete on droplet\n`);
@@ -182,43 +201,9 @@ async function action(filePath) {
 			process.stdout.write(`${chalk.cyan('✓')} Remove setup key from authorized_keys\n`);
 			success('NodeCG deployed!');
 		}
-
-		// TODO: there has to be a better way to end this process than this lol.
-		return new Promise(resolve => resolve());
 	} catch (e) {
 		console.error(e);
-		return new Promise((resolve, reject) => reject());
 	}
-}
-
-/**
- * When cloud-init is done, it writes a result.json file.
- * By checking for the existence of this file, we can know if cloud-init has completed.
- * This file will also contain an array of errors, if cloud-init encountered any.
- * @param {NodeSSH} ssh - A connected SSH tunnel.
- * @returns {Promise} - A promise that will resolve with a Boolean, or reject with an array of error strings.
- */
-function isBootFinished(ssh) {
-	return new Promise((resolve, reject) => {
-		ssh.execCommand(
-			'[ -f /var/lib/cloud/data/result.json ] && cat /var/lib/cloud/data/result.json || echo "Not found"'
-		).then(result => {
-			if (result.stdout === 'Not found') {
-				return resolve(false);
-			} else if (result.stdout) {
-				const resultJson = JSON.parse(result.stdout).v1;
-				if (resultJson.errors && resultJson.errors.length > 0) {
-					return reject(resultJson.errors);
-				}
-
-				return resolve(true);
-			}
-
-			reject(result.stderr);
-		}).catch(error => {
-			reject(error);
-		});
-	});
 }
 
 function parseBundles(deploymentDefinition) {
@@ -392,7 +377,6 @@ function gatherDownloadUrls(deploymentDefinition, credentials) {
 	});
 }
 
-// TODO: Files should be owned by DROPLET_USERNAME
 function generateCloudConfig(deploymentDefinitionWithDownloadUrls, credentials) {
 	const cloudConfig = new CloudConfig('templates/cloud-config.yml');
 
@@ -420,6 +404,8 @@ function generateCloudConfig(deploymentDefinitionWithDownloadUrls, credentials) 
 		});
 
 		deploymentDefinitionWithDownloadUrls.bundles.forEach(bundle => {
+			cloudConfig.addCommand(`mkdir ${BUNDLES_DIR}/${bundle.name}`);
+
 			cloudConfig.addDownload(bundle.downloadUrl, {
 				dest: `${BUNDLES_DIR}/${bundle.name}.tar.gz`,
 				untar: true,
@@ -437,7 +423,10 @@ function generateCloudConfig(deploymentDefinitionWithDownloadUrls, credentials) 
 		});
 
 		// Transfer ownership of these newly-downloaded files to the nodecg user
-		cloudConfig.addCommand('chown -R nodecg:nodecg /home/nodecg/');
+		cloudConfig.addCommand(`chown -R ${DROPLET_USERNAME}:${DROPLET_USERNAME} /home/nodecg/`);
+
+		// Finally, start pm2
+		cloudConfig.addCommand('su - nodecg -c \'pm2 start /home/nodecg/nodecg/index.js --name=nodecg\'');
 
 		return cloudConfig;
 	});

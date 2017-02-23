@@ -17,6 +17,8 @@ runcmd:
   - cp -rT /etc/skel /home/nodecg
   # Disallow root login for security purposes. There should be no need to log in as root on a NodeCG box.
   - sed -i -e '/^PermitRootLogin/s/^.*$/PermitRootLogin no/' /etc/ssh/sshd_config
+  # Silly hack to make `nvm` work from `su -c` commands
+  - sed -i -e '/\*[)] return;;/s/^.*$/#      \*) return;;/' /home/nodecg/.bashrc
   # Explicitly permit the "nodecg" user to log in.
   - sed -i -e '$aAllowUsers nodecg' /etc/ssh/sshd_config
   # Restart SSH to apply the changes made to sshd_config
@@ -26,12 +28,19 @@ runcmd:
   - systemctl start nginx
   - chown -R nodecg:nodecg /home/nodecg/
   # Install nvm, which we'll use to install the version of Node.js specified by nodejs_version in the deployment definition.
+  - su - nodecg -c 'curl -o- https://raw.githubusercontent.com/creationix/nvm/v0.33.0/install.sh | bash'
+  # Prevent nvm from echoing "Now using..." when selecting a Node version.
+  - 'sed -i -e ''/nvm_echo "$NVM_USE_OUTPUT"/s/^.*$/: #deliberate no-op by nodecg-cli/'' /home/nodecg/.nvm/nvm.sh'
+  # Make swapfile, which we'll likely need to run `npm install` with running out of RAM.
+  - fallocate -l 1G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile
   - >-
-    su - nodecg -c 'curl -o- https://raw.githubusercontent.com/creationix/nvm/v0.33.0/install.sh | bash &&
-    nvm install {{nodejs_version}} && echo "nvm use {{nodejs_version}}" >> ~/.bashrc && npm install -g pm2 bower &&
-    cd /home/nodecg/nodecg && npm install && bower install && pm2 start /home/nodecg/nodecg/index.js --name=nodecg'
+    su - nodecg -c 'source ~/.bashrc && nvm install {{nodejs_version}} &&
+    echo "nvm use {{nodejs_version}}" >> ~/.bashrc && npm install -g pm2 bower && cd /home/nodecg/nodecg &&
+    npm install && bower install'
   # pm2 startup
   - env PATH=$PATH:/usr/bin pm2 startup systemd -u nodecg --hp /home/nodecg
+  # Turn off swapfile now that we don't need it anymore.
+  - swapoff /swapfile
   # TODO: symlink assets, logs, and db folders to the volume
 
 write_files:
