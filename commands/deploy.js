@@ -14,6 +14,7 @@ const escapeStringRegexp = require('escape-string-regexp');
 const fingerprint = require('ssh-fingerprint');
 const GitHubApi = require('github');
 const hostedGitInfo = require('hosted-git-info');
+const inquirer = require('inquirer');
 const NodeSSH = require('node-ssh');
 const request = require('request-promise');
 const semver = require('semver');
@@ -63,6 +64,7 @@ async function action(filePath) {
 
 	try {
 		const credentials = await gatherNeededCredentials(deploymentDefinition);
+		const digitalOceanApi = new DigitalOcean(credentials.digitalocean);
 
 		const stopGatherDownloadUrlsSpinner = wait('Gather download URLs for NodeCG and bundles');
 		deploymentDefinition = await gatherDownloadUrls(deploymentDefinition, credentials);
@@ -79,9 +81,129 @@ async function action(filePath) {
 		stopGenerateCloudConfigSpinner();
 		process.stdout.write(`${chalk.cyan('✓')} Generate cloud-init script\n`);
 
+		// If the datacenter for this deployment definition does not support Block Storage,
+		// ask the user if they wish to continue or select another datacenter.
+		const regions = await digitalOceanApi.listRegions();
+		let chosenRegion = deploymentDefinition.droplet.region;
+		const chosenRegionSupportsStorage = regions.some(region => region.slug === chosenRegion && region.features.includes('storage'));
+		let useBlockStorage = true;
+		if (!chosenRegionSupportsStorage) {
+			const {changeRegion} = await inquirer.prompt([{
+				type: 'confirm',
+				name: 'changeRegion',
+				message: `Region "${deploymentDefinition.droplet.region}" does not support Block Storage volumes.` +
+				'Would you like to change to a region that does?'
+			}]);
+
+			if (changeRegion) {
+				chosenRegion = await inquirer.prompt([{
+					type: 'list',
+					name: 'newRegion',
+					message: 'Please select from the regions that support Block Storage',
+					choices: regions.filter(region => {
+						return region.features.includes('storage');
+					}).map(region => {
+						return {
+							name: `${region.name} (${region.slug})`,
+							value: region.slug
+						};
+					}),
+					default: 'nyc1'
+				}]).then(({newRegion}) => {
+					return newRegion;
+				});
+			} else {
+				useBlockStorage = false;
+			}
+		}
+
+		let volume;
+		if (useBlockStorage) {
+			// If the deployment definition does not specify a volume_id, ask if they would like to make
+			// a new volume or use an existing volume.
+			if (!deploymentDefinition.droplet.volume_id) {
+				const {shouldCreateVolume} = await inquirer.prompt([{
+					type: 'choice',
+					name: 'shouldCreateVolume',
+					message: 'Your deployment definition does not specify a droplet.volume_id to use for ' +
+						'Block Storage. Would you like to create a new Block Storage volume or choose an existing one?',
+					choices: [{
+						name: 'Create a new volume',
+						value: true
+					}, {
+						name: 'Choose an existing volume',
+						value: false
+					}]
+				}]);
+
+				if (shouldCreateVolume) {
+					const stopCreateVolumeSpinner = wait('Create Block Storage volume');
+					volume = await digitalOceanApi.createVolume({
+						size_gigabytes: deploymentDefinition.volume.size_gigabytes, // eslint-disable-line camelcase
+						name: deploymentDefinition.volume.name,
+						region: chosenRegion
+					});
+					stopCreateVolumeSpinner();
+					process.stdout.write(`${chalk.cyan('✓')} Create Block Storage volume\n`);
+				} else {
+					const availableVolumes = await digitalOceanApi.listVolumes(chosenRegion);
+					if (availableVolumes.length > 0) {
+						volume = await inquirer.prompt([{
+							type: 'list',
+							name: 'volume',
+							message: 'Please choose a Block Storage volume to use for this deployment',
+							choices: availableVolumes.map(volume => {
+								const numDroplets = volume.droplet_ids.length;
+								const name = numDroplets > 0 ?
+									`${volume.name} (Currently attached to ${numDroplets} other droplet(s)` :
+									volume.name;
+								return {
+									name,
+									value: volume.id
+								};
+							})
+						}]);
+
+						if (volume.droplet_ids.length >= 2) {
+							// todo: throw error because this program was written when volumes could only be on a single droplet
+						}
+
+						if (volume.droplet_ids.length === 1) {
+							const destroyOldDroplet = await inquirer.prompt([{
+								type: 'list',
+								name: 'volume',
+								message: 'Please choose a Block Storage volume to use for this deployment',
+								choices: availableVolumes.map(volume => {
+									const numDroplets = volume.droplet_ids.length;
+									const name = numDroplets > 0 ?
+										`${volume.name} (Currently attached to ${numDroplets} other droplet(s)` :
+										volume.name;
+									return {
+										name,
+										value: volume.id
+									};
+								})
+							}]);
+							// TODO: power down droplet that currently owns the volume, then detach, then attach to new droplet
+							// TODO: ask for permission to delete droplet
+							await digitalOceanApi.deleteDroplet();
+						}
+					} else {
+						// TODO: tell the user that they have no path forward and abort.
+					}
+				}
+			}
+		}
+
+		// TODO: prompt to write changes back to deployment definition (region, volume_id)
+
 		const stopCreateDropletSpinner = wait('Create droplet');
-		const digitalOceanApi = new DigitalOcean(credentials.digitalocean);
 		const dropletConfig = Object.assign({}, deploymentDefinition.droplet);
+
+		if (useBlockStorage) {
+			dropletConfig.volume = [volume.id];
+		}
+
 		dropletConfig.ssh_keys = [fingerprint(credentials.publickey)]; // eslint-disable-line camelcase
 		dropletConfig.user_data = cloudConfig.dump(); // eslint-disable-line camelcase
 		fs.writeFileSync('cloud-config.yml', dropletConfig.user_data, 'utf-8'); // TODO: remove this
@@ -204,6 +326,24 @@ async function action(filePath) {
 	} catch (e) {
 		console.error(e);
 	}
+}
+
+function mountVolume(ssh) {
+	/*
+	 # Format the volume with ext4 Warning: This will erase all data on the volume. Only run this command on a volume with no existing data.
+	 $ sudo mkfs.ext4 -F /dev/disk/by-id/scsi-0DO_Volume_volume-nyc1-01
+	 */
+
+	/*
+	 # Create a mount point under /mnt
+	 $ sudo mkdir -p /mnt/volume-nyc1-01
+
+	 # Mount the volume
+	 $ sudo mount -o discard,defaults /dev/disk/by-id/scsi-0DO_Volume_volume-nyc1-01 /mnt/volume-nyc1-01
+
+	 # Change fstab so the volume will be mounted after a reboot
+	 $ echo '/dev/disk/by-id/scsi-0DO_Volume_volume-nyc1-01 /mnt/volume-nyc1-01 ext4 defaults,nofail,discard 0 0' | sudo tee -a /etc/fstab
+	 */
 }
 
 function parseBundles(deploymentDefinition) {

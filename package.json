@@ -37,7 +37,7 @@
     "chalk": "^2.0.0",
     "clone": "^2.1.0",
     "commander": "^2.6.0",
-    "digitalocean-v2": "0.0.2",
+    "digitalocean-v2": "^0.2.0",
     "escape-string-regexp": "^1.0.5",
     "fs-promise": "^2.0.0",
     "github": "^9.0.0",
