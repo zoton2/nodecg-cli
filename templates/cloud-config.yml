@@ -1,28 +1,8 @@
 #cloud-config
 
-apt:
-  preserve_sources_list: true
-  sources:
-    yarn.list:
-          # 2.1 source
-          #
-          # Creates a file in /etc/apt/sources.list.d/ for the sources list entry
-          # based on the key: "/etc/apt/sources.list.d/curtin-dev-ppa.list"
-          source: "deb https://dl.yarnpkg.com/debian/ stable main"
-
-          # 2.2 keyid
-          #
-          # Importing a gpg key for a given key id. Used keyserver defaults to
-          # keyserver.ubuntu.com
-          keyid: F430BBA5 # GPG key ID published on a key server
-
 packages:
-  # Makes the `aunpack` command available, which can extract most common archive formats.
-  - atool
   - build-essential
   - nginx
-  - letsencrypt
-  - yarn
 
 users:
   - name: nodecg
@@ -41,10 +21,9 @@ runcmd:
   - sed -i -e '$aAllowUsers nodecg' /etc/ssh/sshd_config
   # Restart SSH to apply the changes made to sshd_config
   - service sshd restart
-  - systemctl stop nginx
-  #- letsencrypt certonly --standalone --non-interactive --agree-tos --email {{email}} -d {{domain}}
-  - systemctl start nginx
   - chown -R nodecg:nodecg /home/nodecg/
+  # Symlink the nginx site, overwriting the default symlink
+  - ln -sf /etc/nginx/sites-available/nodecg /etc/nginx/sites-enabled/default
   # Install nvm, which we'll use to install the version of Node.js specified by nodejs_version in the deployment definition.
   - su - nodecg -c 'curl -o- https://raw.githubusercontent.com/creationix/nvm/v0.33.0/install.sh | bash'
   # Prevent nvm from echoing "Now using..." when selecting a Node version.
@@ -56,54 +35,8 @@ runcmd:
     echo "nvm use {{nodejs_version}}" >> ~/.bashrc && npm install -g pm2 bower && cd /home/nodecg/nodecg &&
     npm install && bower install'
   # pm2 startup
+  # TODO: don't think this works
   - env PATH=$PATH:/usr/bin pm2 startup systemd -u nodecg --hp /home/nodecg
   # Turn off swapfile now that we don't need it anymore.
   - swapoff /swapfile
   # TODO: symlink assets, logs, and db folders to the volume
-
-write_files:
-  # Renews the letsencrypt certificate on the first of every month at 3:30 AM,
-  # then reloads nginx five minutes later at 3:35 AM, to actually start using the new cert.
-  - owner: root:root
-    path: /etc/cron.d/letsencrypt_auto_renew
-    content: |
-      30 3 1 * * /usr/bin/letsencrypt renew >> /var/log/le-renew.log
-      35 3 1 * * /bin/systemctl reload nginx
-
-  # An nginx template that we'll need to edit in our code, to replace the {{domain}} and {{port}} placeholders.
-  - path: /etc/nginx/sites-available/default
-    owner: root:root
-    content: |
-      # HTTP - redirect all requests to HTTPS:
-      server {
-              listen 80;
-              listen [::]:80 default_server ipv6only=on;
-              return 301 https://$host$request_uri;
-      }
-
-      # HTTPS - proxy requests on to local Node.js app:
-      server {
-              listen 443;
-              server_name {{domain}};
-
-              ssl on;
-              # Use certificate and key provided by Let's Encrypt:
-              ssl_certificate /etc/letsencrypt/live/{{domain}}/fullchain.pem;
-              ssl_certificate_key /etc/letsencrypt/live/{{domain}}/privkey.pem;
-              ssl_session_timeout 5m;
-              ssl_protocols TLSv1 TLSv1.1 TLSv1.2;
-              ssl_prefer_server_ciphers on;
-              ssl_ciphers 'EECDH+AESGCM:EDH+AESGCM:AES256+EECDH:AES256+EDH';
-
-              # Pass requests for / to localhost:{{port}}:
-              location / {
-                      proxy_set_header X-Real-IP $remote_addr;
-                      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-                      proxy_set_header X-NginX-Proxy true;
-                      proxy_pass http://localhost:{{port}}/;
-                      proxy_ssl_session_reuse off;
-                      proxy_set_header Host $http_host;
-                      proxy_cache_bypass $http_upgrade;
-                      proxy_redirect off;
-              }
-      }

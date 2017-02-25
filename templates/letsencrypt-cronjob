@@ -1,0 +1,4 @@
+# Renews the letsencrypt certificate on the first of every month at 3:30 AM,
+# then reloads nginx five minutes later at 3:35 AM, to actually start using the new cert.
+30 3 1 * * /usr/bin/letsencrypt renew >> /var/log/le-renew.log
+35 3 1 * * /bin/systemctl reload nginx

@@ -18,6 +18,7 @@ const inquirer = require('inquirer');
 const NodeSSH = require('node-ssh');
 const request = require('request-promise');
 const semver = require('semver');
+const Mustache = require('mustache');
 
 // Ours
 const cfg = require('../lib/cfg');
@@ -289,6 +290,7 @@ async function action(filePath) {
 	stopSshToDropletSpinner();
 	process.stdout.write(`${chalk.cyan('✓')} ssh to droplet\n`);
 
+	// TODO: catch errors when a volume with this name already exists
 	if (useBlockStorage) {
 		const stopMountVolumeSpinner = wait(`Mount volume "${volume.name}" on droplet`);
 		await mountVolume(ssh, {deploymentDefinition, volume});
@@ -335,7 +337,10 @@ async function action(filePath) {
 				reject();
 			}).catch(error => {
 				keepTrying = false;
+				stopWaitForCloudInitSpinner();
 				reject(error);
+				process.exit(1);
+				// TODO: ask to clean up changes?
 			});
 			/* eslint-enable no-loop-func */
 		} while (keepTrying === true);
@@ -556,25 +561,49 @@ function gatherDownloadUrls(deploymentDefinition, credentials) {
 	});
 }
 
-function generateCloudConfig(deploymentDefinitionWithDownloadUrls, credentials) {
+async function generateCloudConfig(deploymentDefinition, credentials) {
 	const cloudConfig = new CloudConfig('templates/cloud-config.yml');
 
 	cloudConfig.addSshKey(DROPLET_USERNAME, credentials.publickey);
 	cloudConfig.addSshKey(DROPLET_USERNAME, credentials.keypair.ssh); // Only used during setup, then deleted from authorized_keys.
 
-	if (deploymentDefinitionWithDownloadUrls.nodecg.config) {
-		cloudConfig.addWriteFile(`${NODECG_DIR}/cfg/nodecg.json`, deploymentDefinitionWithDownloadUrls.nodecg.config);
+	if (deploymentDefinition.nodecg.config) {
+		cloudConfig.addWriteFile({
+			path: `${NODECG_DIR}/cfg/nodecg.json`,
+			content: deploymentDefinition.nodecg.config
+		});
 	}
 
-	cloudConfig.replace('{{nodejs_version}}', deploymentDefinitionWithDownloadUrls.nodejs_version);
-	cloudConfig.replace('{{domain}}', deploymentDefinitionWithDownloadUrls.domain);
-	cloudConfig.replace('{{port}}', deploymentDefinitionWithDownloadUrls.nodecg.port);
-	cloudConfig.replace('{{email}}', deploymentDefinitionWithDownloadUrls.email);
+	cloudConfig.replace('{{nodejs_version}}', deploymentDefinition.nodejs_version);
+	cloudConfig.replace('{{email}}', deploymentDefinition.email);
 
-	// TODO: secure/not secure
+	const nginxSiteTemplate = deploymentDefinition.secure ?
+		fs.readFileSync('templates/nginx-site-secure.mst', 'utf-8') :
+		fs.readFileSync('templates/nginx-site-insecure.mst', 'utf-8');
 
-	// Download NodeCG
-	return getNodecgTarballUrl(deploymentDefinitionWithDownloadUrls.nodecg.version).then(nodecgTarballUrl => {
+	// TODO: look into NodeCG's own `secure` setting
+	cloudConfig.addWriteFile({
+		owner: 'root:root',
+		path: '/etc/nginx/sites-available/nodecg',
+		content: Mustache.render(nginxSiteTemplate, {
+			domain: deploymentDefinition.domain,
+			port: deploymentDefinition.nodecg.port
+		})
+	});
+
+	if (deploymentDefinition.secure) {
+		cloudConfig.addWriteFile({
+			owner: 'root:root',
+			path: '/etc/cron.d/letsencrypt_auto_renew',
+			content: fs.readFileSync('templates/letsencrypt-cronjob')
+		});
+
+		cloudConfig.addCommand('service stop nginx');
+		cloudConfig.addCommand('letsencrypt certonly --standalone --non-interactive --agree-tos --email {{email}} -d {{domain}}');
+		cloudConfig.addCommand('service start nginx');
+	}
+
+	await getNodecgTarballUrl(deploymentDefinition.nodecg.version).then(nodecgTarballUrl => {
 		cloudConfig.addDownload(nodecgTarballUrl, {
 			dest: `/home/${DROPLET_USERNAME}/nodecg.tar.gz`,
 			untar: true,
@@ -584,7 +613,7 @@ function generateCloudConfig(deploymentDefinitionWithDownloadUrls, credentials) 
 			extractTo: NODECG_DIR
 		});
 
-		deploymentDefinitionWithDownloadUrls.bundles.forEach(bundle => {
+		deploymentDefinition.bundles.forEach(bundle => {
 			cloudConfig.addCommand(`mkdir ${BUNDLES_DIR}/${bundle.name}`);
 
 			cloudConfig.addDownload(bundle.downloadUrl, {
@@ -599,16 +628,22 @@ function generateCloudConfig(deploymentDefinitionWithDownloadUrls, credentials) 
 			});
 
 			if (bundle.config) {
-				cloudConfig.addWriteFile(`${NODECG_DIR}/cfg/${bundle.name}.json`, bundle.config);
+				cloudConfig.addWriteFile({
+					path: `${NODECG_DIR}/cfg/${bundle.name}.json`,
+					content: bundle.config
+				});
 			}
 		});
-
-		// Transfer ownership of these newly-downloaded files to the nodecg user
-		cloudConfig.addCommand(`chown -R ${DROPLET_USERNAME}:${DROPLET_USERNAME} /home/nodecg/`);
-
-		// Finally, start pm2
-		cloudConfig.addCommand('su - nodecg -c \'pm2 start /home/nodecg/nodecg/index.js --name=nodecg\'');
-
-		return cloudConfig;
 	});
+
+	// Transfer ownership of these newly-downloaded files to the nodecg user
+	cloudConfig.addCommand(`chown -R ${DROPLET_USERNAME}:${DROPLET_USERNAME} /home/nodecg/`);
+
+	// Start pm2
+	cloudConfig.addCommand('su - nodecg -c \'pm2 start /home/nodecg/nodecg/index.js --name=nodecg\'');
+
+	// Restart nginx
+	cloudConfig.addCommand('service nginx restart');
+
+	return cloudConfig;
 }

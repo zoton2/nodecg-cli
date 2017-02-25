@@ -46,6 +46,7 @@
     "js-yaml": "^3.8.1",
     "json-schema-defaults": "^0.3.0",
     "keypair": "^1.0.1",
+    "mustache": "^2.3.0",
     "node-forge": "^0.7.0",
     "node-ssh": "^4.0.1",
     "npm-package-arg": "^4.1.0",
