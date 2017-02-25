@@ -1,10 +1,28 @@
 #cloud-config
+
+apt:
+  preserve_sources_list: true
+  sources:
+    yarn.list:
+          # 2.1 source
+          #
+          # Creates a file in /etc/apt/sources.list.d/ for the sources list entry
+          # based on the key: "/etc/apt/sources.list.d/curtin-dev-ppa.list"
+          source: "deb https://dl.yarnpkg.com/debian/ stable main"
+
+          # 2.2 keyid
+          #
+          # Importing a gpg key for a given key id. Used keyserver defaults to
+          # keyserver.ubuntu.com
+          keyid: F430BBA5 # GPG key ID published on a key server
+
 packages:
   # Makes the `aunpack` command available, which can extract most common archive formats.
   - atool
   - build-essential
   - nginx
   - letsencrypt
+  - yarn
 
 users:
   - name: nodecg
