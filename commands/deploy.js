@@ -11,11 +11,9 @@ const chalk = require('chalk');
 const clone = require('clone');
 const DigitalOcean = require('digitalocean-v2');
 const escapeStringRegexp = require('escape-string-regexp');
-const fingerprint = require('ssh-fingerprint');
+
 const GitHubApi = require('github');
 const hostedGitInfo = require('hosted-git-info');
-const inquirer = require('inquirer');
-const NodeSSH = require('node-ssh');
 const request = require('request-promise');
 const semver = require('semver');
 const Mustache = require('mustache');
@@ -31,10 +29,8 @@ const getGitHubCredentials = require('../lib/get-github-credentials');
 const getNodecgTarballUrl = require('../lib/get-nodecg-tarball-url');
 const getPublicKey = require('../lib/get-public-key');
 const success = require('../lib/utils/output/success');
-const info = require('../lib/utils/output/info');
 const wait = require('../lib/utils/output/wait');
 
-const ssh = new NodeSSH();
 const config = cfg.read();
 const github = new GitHubApi();
 const unauthenticatedBitbucket = bitbucketjs();
@@ -86,267 +82,69 @@ async function action(filePath) {
 	stopGenerateCloudConfigSpinner();
 	process.stdout.write(`${chalk.cyan('✓')} Generate cloud-init script\n`);
 
-	// If the datacenter for this deployment definition does not support Block Storage,
-	// ask the user if they wish to continue or select another datacenter.
-	const regions = await digitalOceanApi.listRegions();
-	let chosenRegion = deploymentDefinition.droplet.region;
-	const chosenRegionSupportsStorage = regions.some(region => region.slug === chosenRegion && region.features.includes('storage'));
-	let useBlockStorage = true;
-	if (!chosenRegionSupportsStorage) {
-		const {changeRegion} = await inquirer.prompt([{
-			type: 'confirm',
-			name: 'changeRegion',
-			message: `Region "${deploymentDefinition.droplet.region}" does not support Block Storage volumes.` +
-			'Would you like to change to a region that does?'
-		}]);
+	const decisions = {
+		useBlockStorage: true,
+		useFloatingIp: true,
+		chosenRegion: deploymentDefinition.droplet.region,
+		chosenFloatingIp: deploymentDefinition.droplet.floating_ip,
+		chosenVolume: {id: deploymentDefinition.droplet.volume_id},
+		droplet: null
+	};
 
-		if (changeRegion) {
-			chosenRegion = await inquirer.prompt([{
-				type: 'list',
-				name: 'newRegion',
-				message: 'Please select from the regions that support Block Storage',
-				choices: regions.filter(region => {
-					return region.features.includes('storage');
-				}).map(region => {
-					return {
-						name: `${region.name} (${region.slug})`,
-						value: region.slug
-					};
-				}),
-				default: 'nyc1'
-			}]).then(({newRegion}) => {
-				return newRegion;
-			});
-		} else {
-			useBlockStorage = false;
-		}
+	// Changes useBlockStorage and chosenRegion (because not every region supports block storage)
+	const chooseRegion = require('../lib/deploy/region.js');
+	await chooseRegion(deploymentDefinition, digitalOceanApi, decisions);
+
+	/* At this point, we don't allow any more region changes.
+	 * If we encounter something that requires changing region to continue, we abort.
+	 */
+
+	// Changes useFloatingIp and chosenFloatingIp.
+	const chooseFloatingIp = require('../lib/deploy/floating-ip.js');
+	await chooseFloatingIp(deploymentDefinition, digitalOceanApi, decisions);
+
+	if (decisions.useFloatingIp) {
+		const waitUntilDomainResolvesToFloatingIp = require('../lib/deploy/wait-until-domain-resolves-to-floating-ip');
+		await waitUntilDomainResolvesToFloatingIp({
+			deploymentDefinition, decisions
+		});
 	}
 
-	let volume;
-	if (useBlockStorage && !deploymentDefinition.droplet.volume_id) {
-		console.log();
-		// If the deployment definition does not specify a volume_id, ask if they would like to make
-		// a new volume or use an existing volume.
-		const {shouldCreateVolume} = await inquirer.prompt([{
-			type: 'list',
-			name: 'shouldCreateVolume',
-			message: 'Your deployment definition does not specify a `droplet.volume_id` to use for ' +
-				'Block Storage. Would you like to create a new Block Storage volume or choose an existing one?',
-			choices: [{
-				name: 'Create a new volume',
-				value: true
-			}, {
-				name: 'Choose an existing volume',
-				value: false
-			}]
-		}]);
-
-		if (shouldCreateVolume) {
-			const stopCreateVolumeSpinner = wait('Create Block Storage volume');
-			volume = await digitalOceanApi.createVolume({
-				size_gigabytes: deploymentDefinition.volume.size_gigabytes, // eslint-disable-line camelcase
-				name: deploymentDefinition.volume.name,
-				region: chosenRegion
-			});
-			stopCreateVolumeSpinner();
-			process.stdout.write(`${chalk.cyan('✓')} Create Block Storage volume\n`);
-		} else {
-			const availableVolumes = await digitalOceanApi.listVolumes(chosenRegion);
-			if (availableVolumes.length <= 0) {
-				// Tell the user that they have no path forward and abort.
-				error(`You opted to use an existing volume, but you have none!`);
-				process.exit(1);
-			}
-
-			volume = await inquirer.prompt([{
-				type: 'list',
-				name: 'volume',
-				message: 'Please choose a Block Storage volume to use for this deployment',
-				choices: availableVolumes.map(volume => {
-					const numDroplets = volume.droplet_ids.length;
-					const name = numDroplets > 0 ?
-						`${volume.name} (Currently attached to ${numDroplets} other droplet(s))` :
-						volume.name;
-					return {
-						name,
-						value: volume
-					};
-				})
-			}]).then(answers => {
-				return answers.volume;
-			});
-
-			if (volume.droplet_ids.length >= 2) {
-				error(`Volume ${volume.name} is attached to multiple droplets, which means that DigitalOcean has` +
-					'rolled out some new features! Tell Lange to update this program.');
-				process.exit(1);
-			}
-
-			if (volume.droplet_ids.length === 1) {
-				const oldDroplet = await digitalOceanApi.getDroplet(volume.droplet_ids[0]);
-				const {oldDropletAction} = await inquirer.prompt([{
-					type: 'list',
-					name: 'oldDropletAction',
-					message: `Volume "${volume.name}" is currently attached to droplet "${oldDroplet.name}". How do you want to proceed?`,
-					choices: [{
-						name: `Destroy droplet "${oldDroplet.name}"`,
-						value: 'destroy'
-					}, {
-						name: `Shutdown droplet "${oldDroplet.name}"`,
-						value: 'shutdown'
-					}, {
-						name: 'Abort (make no changes and cancel this deployment)',
-						value: 'abort'
-					}]
-				}]);
-
-				if (oldDropletAction === 'abort') {
-					info('Deployment aborted.');
-					process.exit(1);
-				}
-
-				if (oldDropletAction === 'shutdown') {
-					await digitalOceanApi.shutdownDroplet(oldDroplet.id);
-					await digitalOceanApi.detachVolume(volume.id, oldDroplet.id);
-				}
-
-				if (oldDropletAction === 'destroy') {
-					// Destroying the old droplet automatically detaches all volumes from it.
-					await digitalOceanApi.deleteDroplet(oldDroplet.id);
-				}
-			}
-		}
+	if (decisions.useBlockStorage && !deploymentDefinition.droplet.volume_id) {
+		// Changes chosenVolume
+		const chooseVolume = require('../lib/deploy/volume.js');
+		await chooseVolume(deploymentDefinition, digitalOceanApi, decisions);
 	}
 
 	// TODO: prompt to destroy and existing droplets with same name
 
-	if (chosenRegion !== deploymentDefinition.droplet.region || volume.id !== deploymentDefinition.volume.id) {
+	if (decisions.chosenRegion !== deploymentDefinition.droplet.region ||
+		decisions.chosenVolume.id !== deploymentDefinition.volume.id) {
 		// TODO: prompt to write changes back to deployment definition (region, volume_id)
 	}
 
-	const stopCreateDropletSpinner = wait('Create droplet');
-	const dropletConfig = Object.assign({}, deploymentDefinition.droplet);
+	const createDroplet = require('../lib/deploy/create-droplet.js');
+	decisions.droplet = await createDroplet({
+		deploymentDefinition, digitalOceanApi, cloudConfig, decisions, credentials
+	});
 
-	if (useBlockStorage) {
-		dropletConfig.volumes = [volume.id];
+	if (decisions.useFloatingIp) {
+		const stopAssignFloatingIPSpinner = wait('Assign Floating IP to droplet');
+		await digitalOceanApi.assignFloatingIP(decisions.chosenFloatingIp, decisions.droplet.id);
+		stopAssignFloatingIPSpinner();
+		process.stdout.write(`${chalk.cyan('✓')} Assign Floating IP to droplet\n`);
 	}
 
-	dropletConfig.ssh_keys = [fingerprint(credentials.publickey)]; // eslint-disable-line camelcase
-	dropletConfig.user_data = cloudConfig.dump(); // eslint-disable-line camelcase
-	fs.writeFileSync('cloud-config.yml', dropletConfig.user_data, 'utf-8'); // TODO: remove this
-	const dropletCreationResult = await digitalOceanApi.createDroplet(dropletConfig);
-	stopCreateDropletSpinner();
-	process.stdout.write(`${chalk.cyan('✓')} Create droplet\n`);
+	const sshToDroplet = require('../lib/deploy/ssh-to-droplet.js');
+	const ssh = await sshToDroplet({decisions, credentials});
 
-	// Keep getting droplet info until it tells us what its IPv4 address is
-	const stopWaitForBootSpinner = wait('Wait for droplet to finish booting');
-	const droplet = await new Promise(resolve => {
-		const interval = setInterval(() => {
-			digitalOceanApi.getDroplet(dropletCreationResult.id).then(dropletStatus => {
-				if (dropletStatus.status === 'active') {
-					clearInterval(interval);
-					resolve(dropletStatus);
-				}
-			});
-		}, 2500);
-	});
-	stopWaitForBootSpinner();
-	process.stdout.write(`${chalk.cyan('✓')} Wait for droplet to finish booting\n`);
-
-	const dropletIp = droplet.networks.v4[0].ip_address;
-	const stopSshToDropletSpinner = wait(`ssh to droplet (${dropletIp})`);
-	// TODO: Have a timeout for this
-	await new Promise(async function (resolve, reject) { // eslint-disable-line prefer-arrow-callback
-		let keepTrying = true;
-		do {
-			/* eslint-disable no-loop-func */
-			await ssh.connect({
-				host: dropletIp,
-				username: 'nodecg',
-				privateKey: credentials.keypair.private
-			}).then(() => {
-				keepTrying = false;
-				resolve();
-			}).catch(err => {
-				if (err.code === 'ECONNREFUSED' || err.code === 'ETIMEDOUT' || err.message === 'Timed out while waiting for handshake') {
-					// retry
-				} else {
-					stopSshToDropletSpinner();
-					keepTrying = false;
-					process.stdout.write(`${chalk.red('✗')} ssh to droplet\n`);
-
-					if (err.code) {
-						error(`Failed to ssh to droplet: ${err.code}`);
-					} else {
-						error(`Failed to ssh to droplet: ${err}`);
-					}
-
-					reject(err);
-				}
-			});
-			/* eslint-enable no-loop-func */
-		} while (keepTrying === true);
-	});
-	stopSshToDropletSpinner();
-	process.stdout.write(`${chalk.cyan('✓')} ssh to droplet\n`);
-
-	// TODO: catch errors when a volume with this name already exists
-	if (useBlockStorage) {
-		const stopMountVolumeSpinner = wait(`Mount volume "${volume.name}" on droplet`);
-		await mountVolume(ssh, {deploymentDefinition, volume});
-		stopMountVolumeSpinner();
-		process.stdout.write(`${chalk.cyan('✓')} Mount volume "${volume.name}" on droplet\n`);
+	if (decisions.useBlockStorage) {
+		const mountVolume = require('../lib/deploy/mount-volume.js');
+		await mountVolume({decisions, ssh});
 	}
 
-	// TODO: could use `tail -f /var/log/cloud-init-output.log` to print live output of cloud-init?
-	const stopWaitForCloudInitSpinner = wait('Wait for cloud-init to complete on droplet (this may take up to 15 minutes)');
-	await new Promise(async function (resolve, reject) { // eslint-disable-line prefer-arrow-callback
-		let keepTrying = true;
-		do {
-			/* eslint-disable no-loop-func */
-			// Wait two seconds
-			await new Promise(resolve => {
-				setTimeout(resolve, 2000);
-			});
-
-			await ssh.execCommand(
-				'[ -f /var/lib/cloud/data/result.json ] && cat /var/lib/cloud/data/result.json || echo "Not found"'
-			).then(result => {
-				if (result.stdout === 'Not found') {
-					return;
-				}
-
-				keepTrying = false;
-
-				if (result.stdout) {
-					try {
-						const resultJson = JSON.parse(result.stdout).v1;
-						if (Array.isArray(resultJson.errors) && resultJson.errors.length > 0) {
-							error(`cloud-init failed:\n\t${resultJson.errors.join('\n\t')}`);
-							return reject();
-						}
-
-						return resolve();
-					} catch (e) {
-						console.log('bad json:', result.stdout);
-						return reject();
-					}
-				}
-
-				error(`cloud-init failed:\n\t${result.stderr}`);
-				reject();
-			}).catch(error => {
-				keepTrying = false;
-				stopWaitForCloudInitSpinner();
-				reject(error);
-				process.exit(1);
-				// TODO: ask to clean up changes?
-			});
-			/* eslint-enable no-loop-func */
-		} while (keepTrying === true);
-	});
-	stopWaitForCloudInitSpinner();
-	process.stdout.write(`${chalk.cyan('✓')} Wait for cloud-init to complete on droplet\n`);
+	const waitForCloudInit = require('../lib/deploy/wait-for-cloud-init.js');
+	await waitForCloudInit({ssh});
 
 	// Remove our setup key from authorized_keys
 	const stopRemoveSetupKeySpinner = wait('Remove setup key from authorized_keys');
@@ -364,30 +162,6 @@ async function action(filePath) {
 		success('NodeCG deployed!');
 		process.exit(0);
 	}
-}
-
-async function mountVolume(ssh, {deploymentDefinition, volume}) {
-	const mountPath = `/mnt/${deploymentDefinition.volume.name}`;
-	const devicePath = `/dev/disk/by-uuid/${volume.id}`;
-
-	// Create a mount point under /mnt
-	// sudo mkdir -p /mnt/volume-nyc1-01
-	await ssh.execCommand(`sudo mkdir -p ${mountPath}`);
-
-	// Check if the volume is formatted yet
-	// will return "/dev/disk/by-id/scsi-0DO_Volume_division: data" when not formatted
-	const fileResult = await ssh.execCommand(`sudo file -sL ${devicePath}`);
-	if (fileResult === `${devicePath}: data`) {
-		// Format the volume, if necessary
-		ssh.execCommand(`sudo mkfs.ext4 -F ${devicePath}`);
-	}
-
-	// Mount the volume
-	ssh.execCommand(`sudo mount -o discard,defaults ${devicePath} ${mountPath}`);
-
-	// Change fstab so the volume will be mounted after a reboot
-	// echo '/dev/disk/by-id/scsi-0DO_Volume_volume-nyc1-01 /mnt/volume-nyc1-01 ext4 defaults,nofail,discard 0 0' | sudo tee -a /etc/fstab
-	ssh.execCommand(`echo '${devicePath} ${mountPath} ext4 defaults,nofail,discard 0 0' | sudo tee -a /etc/fstab`);
 }
 
 function parseBundles(deploymentDefinition) {
@@ -598,9 +372,11 @@ async function generateCloudConfig(deploymentDefinition, credentials) {
 			content: fs.readFileSync('templates/letsencrypt-cronjob')
 		});
 
-		cloudConfig.addCommand('service stop nginx');
-		cloudConfig.addCommand('letsencrypt certonly --standalone --non-interactive --agree-tos --email {{email}} -d {{domain}}');
-		cloudConfig.addCommand('service start nginx');
+		cloudConfig.addPackage('letsencrypt');
+
+		cloudConfig.addCommand('service nginx stop');
+		cloudConfig.addCommand(`letsencrypt certonly --standalone --non-interactive --agree-tos --email ${deploymentDefinition.email} -d ${deploymentDefinition.domain}`);
+		cloudConfig.addCommand('service nginx start');
 	}
 
 	await getNodecgTarballUrl(deploymentDefinition.nodecg.version).then(nodecgTarballUrl => {
