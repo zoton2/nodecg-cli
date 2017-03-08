@@ -1,7 +1,7 @@
 {
   "name": "nodecg-cli",
   "description": "The NodeCG command line interface.",
-  "version": "5.0.1",
+  "version": "6.0.0-beta.5",
   "repository": {
     "type": "git",
     "url": "git://github.com/nodecg/nodecg-cli.git"
@@ -25,7 +25,9 @@
     "index.js",
     "lib/",
     "commands/",
-    "bin/"
+    "bin/",
+    "schemas/",
+    "templates/"
   ],
   "engines": {
     "node": ">=7.6"

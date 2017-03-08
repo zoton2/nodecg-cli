@@ -1,6 +1,8 @@
 'use strict';
 
 // TODO: rewrite to use got instead of request
+// Native
+const path = require('path');
 
 // Packages
 const chalk = require('chalk');
@@ -46,7 +48,7 @@ module.exports = function (program) {
 };
 
 async function action(filePath) {
-	// TODO: json schema with defaults
+	filePath = path.resolve(filePath);
 	let deploymentDefinition = parseDeploymentDefinition(filePath);
 
 	const credentials = await gatherNeededCredentials({deploymentDefinition, github});

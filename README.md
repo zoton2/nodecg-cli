@@ -11,10 +11,10 @@
 	npm install -g bower
 	```
 
-4. Install nodecg-cli via npm:
+4. Install the nodecg-cli beta via npm:
 
 	```sh
-	npm install -g nodecg-cli
+	npm install -g nodecg-cli@beta
 	````
 
 5. Installing `nodecg-cli` does not install NodeCG itself. To install an instance of NodeCG, use the `setup` command in an empty directory:
