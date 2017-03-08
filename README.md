@@ -46,7 +46,7 @@
 	
 ## About automated deploys
 - Syntax is `nodecg deploy <deploymentDefinitonFilePath>`, where `deploymentDefinitonFilePath` is either a YAML or JSON file.
-  - These deployment definitions have really complex schemas. You can read the schema file at [](/schemas/deployment.yml)
+  - These deployment definitions have really complex schemas. You can read the [schema file](/schemas/deployment.yml)
   to learn more about how these files should be structured. `nodecg deploy` should also throw helpful errors if your
   deployment definition file is wrong.
 - Only deploys to DigitalOcean.
