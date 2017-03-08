@@ -1,6 +1,6 @@
 'use strict';
 
-const util = require('../lib/util');
+const util = require('../lib/utils/nodecg');
 const childProcess = require('child_process');
 const execSync = childProcess.execSync;
 const os = require('os');
@@ -13,8 +13,7 @@ const fetchTags = require('../lib/fetch-tags');
 const NODECG_GIT_URL = 'https://github.com/nodecg/nodecg.git';
 
 module.exports = function (program) {
-	program
-		.command('setup [version]')
+	program.command('setup [version]')
 		.option('-u, --update', 'Update the local NodeCG installation')
 		.option('-k, --skip-dependencies', 'Skip installing npm & bower dependencies')
 		.description('Install a new NodeCG instance')

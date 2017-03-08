@@ -1,10 +1,9 @@
 'use strict';
 
-const util = require('../lib/util');
+const util = require('../lib/utils/nodecg');
 
 module.exports = function (program) {
-	program
-		.command('start')
+	program.command('start')
 		.description('Start NodeCG')
 		.action(() => {
 			// Check if nodecg is already installed

@@ -1,0 +1,132 @@
+---
+"$schema": http://json-schema.org/draft-04/schema#
+type: object
+additionalProperties: false
+properties:
+  debug:
+    type: boolean
+    default: false
+  secure:
+    type: boolean
+    default: true
+  nodejs_version:
+    type: string
+    default: '6'
+    required: true
+  domain:
+    type: string
+  email:
+    type: string
+  droplet:
+    required: true
+    type: object
+    additionalProperties: false
+    properties:
+      name:
+        type: string
+      region:
+        type: string
+        default: nyc1
+        enum:
+        - ams2
+        - ams3
+        - blr1
+        - fra1
+        - lon1
+        - nyc1
+        - nyc2
+        - nyc3
+        - sfo1
+        - sfo2
+        - sgp1
+        - tor1
+      size:
+        type: string
+        default: 512mb
+        enum:
+        - 512mb
+        - 1gb
+        - 2gb
+        - 4gb
+        - 8gb
+        - 16gb
+        - m-16gb
+        - 32gb
+        - m-32gb
+        - 48gb
+        - m-64gb
+        - 64gb
+        - m-128gb
+        - m-224gb
+      image:
+        type: string
+        default: ubuntu-16-04-x64
+      monitoring:
+        type: boolean
+        default: true
+      tags:
+        type: array
+        default:
+        - nodecg
+      floating_ip:
+        type: string
+        required: false
+  volume:
+    type: object
+    additionalProperties: false
+    properties:
+      size_gigabytes:
+        type: integer
+        multipleOf: 1
+        minimum: 1
+        default: 3
+        required: true
+      id:
+        type: string
+      name:
+        type: string
+        required: true
+  nodecg:
+    type: object
+    additionalProperties: false
+    properties:
+      version:
+        type:
+        - string
+        - number
+        required: true
+      config:
+        type: object
+        properties:
+          port:
+            type: integer
+            multipleOf: 1
+            default: 9090
+            required: true
+          baseURL:
+            type: string
+            required: true
+          login:
+            type: object
+            properties:
+              sessionSecret:
+                type: string
+              forceHttpsReturn:
+                type: boolean
+          rollbar:
+            type: object
+  bundles:
+    type: object
+    additionalProperties:
+      type: object
+      additionalProperties: false
+      properties:
+        url:
+          type: string
+          required: true
+        version:
+          type:
+          - string
+          - number
+        config:
+          type: object

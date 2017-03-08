@@ -1,14 +1,13 @@
 'use strict';
 
-const util = require('../lib/util');
+const util = require('../lib/utils/nodecg');
 const chalk = require('chalk');
 const fs = require('fs');
 const path = require('path');
 const defaults = require('json-schema-defaults');
 
 module.exports = function (program) {
-	program
-		.command('defaultconfig [bundle]')
+	program.command('defaultconfig [bundle]')
 		.description('Generate default config from configschema.json')
 		.action(action);
 };

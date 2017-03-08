@@ -6,14 +6,13 @@ const installBundleDeps = require('../lib/install-bundle-deps');
 const execSync = require('child_process').execSync;
 const npa = require('npm-package-arg');
 const path = require('path');
-const util = require('../lib/util');
+const util = require('../lib/utils/nodecg');
 const semver = require('semver');
 const chalk = require('chalk');
 const fetchTags = require('../lib/fetch-tags');
 
 module.exports = function (program) {
-	program
-		.command('install [repo]')
+	program.command('install [repo]')
 		.description('Install a bundle by cloning a git repo. Can be a GitHub owner/repo pair or a git url. ' +
 			'If run in a bundle directory with no arguments, installs that bundle\'s dependencies.')
 		.option('-d, --dev', 'install development npm & bower dependencies')

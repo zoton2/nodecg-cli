@@ -15,3 +15,5 @@ tmp
 
 # Code coverage results
 /coverage
+
+/examples

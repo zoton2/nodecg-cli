@@ -28,15 +28,6 @@ runcmd:
   - su - nodecg -c 'curl -o- https://raw.githubusercontent.com/creationix/nvm/v0.33.0/install.sh | bash'
   # Prevent nvm from echoing "Now using..." when selecting a Node version.
   - 'sed -i -e ''/nvm_echo "$NVM_USE_OUTPUT"/s/^.*$/: #deliberate no-op by nodecg-cli/'' /home/nodecg/.nvm/nvm.sh'
-  # Make swapfile, which we'll likely need to run `npm install` with running out of RAM.
-  - fallocate -l 1G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile
-  - >-
-    su - nodecg -c 'source ~/.bashrc && nvm install {{nodejs_version}} &&
-    echo "nvm use {{nodejs_version}}" >> ~/.bashrc && npm install -g pm2 bower && cd /home/nodecg/nodecg &&
-    npm install && bower install'
   # pm2 startup
-  # TODO: don't think this works
-  - env PATH=$PATH:/usr/bin pm2 startup systemd -u nodecg --hp /home/nodecg
-  # Turn off swapfile now that we don't need it anymore.
-  - swapoff /swapfile
-  # TODO: symlink assets, logs, and db folders to the volume
+  # TODO: sudo env PATH=$PATH:/home/nodecg/.nvm/versions/node/v6.10.0/bin pm2 startup systemd -u nodecg --hp /home/nodecg
+  #- su - nodecg -c 'env PATH=$PATH:/usr/bin pm2 startup systemd -u nodecg --hp /home/nodecg'

@@ -3,14 +3,13 @@
 const fs = require('fs');
 const inquirer = require('inquirer');
 const path = require('path');
-const util = require('../lib/util');
+const util = require('../lib/utils/nodecg');
 const chalk = require('chalk');
 const rimraf = require('rimraf');
 const os = require('os');
 
 module.exports = function (program) {
-	program
-		.command('uninstall <bundle>')
+	program.command('uninstall <bundle>')
 		.description('Uninstalls a bundle.')
 		.option('-f, --force', 'ignore warnings')
 		.action(action);
