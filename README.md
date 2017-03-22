@@ -2,7 +2,7 @@
 
 [NodeCG](https://github.com/nodecg/nodecg)'s command line interface.
 
-#####Confused by the `deploy` command? [Watch this video](https://www.youtube.com/watch?v=6k2d5jZT5v8&feature=youtu.be), it may answer some of your questions.
+##### Confused by the `deploy` command? [Watch this video](https://www.youtube.com/watch?v=6k2d5jZT5v8&feature=youtu.be), it may answer some of your questions.
 
 ## Installation
 1. Install [Node.js](https://nodejs.org/en/) v7.6.0 or greater.
