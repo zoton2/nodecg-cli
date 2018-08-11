@@ -1,6 +1,6 @@
 'use strict';
 
-const assert = require('chai').assert;
+const {assert} = require('chai');
 const fs = require('fs');
 const rimraf = require('rimraf');
 const sinon = require('sinon');

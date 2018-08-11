@@ -1,6 +1,3 @@
 {
-	"extends": "xo/esnext",
-	"ecmaFeatures": {
-		"globalReturn": true
-	}
+	"extends": "xo/esnext"
 }

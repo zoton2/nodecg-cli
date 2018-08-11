@@ -2,7 +2,7 @@
 
 const childProcess = require('child_process');
 const mkdirp = require('mkdirp');
-const assert = require('chai').assert;
+const {assert} = require('chai');
 const sinon = require('sinon');
 const MockProgram = require('../mocks/program');
 const DefaultConfigCommand = require('../../commands/defaultconfig');

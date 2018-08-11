@@ -2,7 +2,7 @@
 
 const util = require('../lib/utils/nodecg');
 const childProcess = require('child_process');
-const execSync = childProcess.execSync;
+const {execSync} = childProcess;
 const os = require('os');
 const chalk = require('chalk');
 const inquirer = require('inquirer');

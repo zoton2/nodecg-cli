@@ -36,8 +36,8 @@ const github = new GitHubApi();
 module.exports = function (program) {
 	program.command('deploy <filePath>')
 		.description('Deploys the given NodeCG instance to DigitalOcean')
-		.action(function () {
-			return action.apply(action, arguments).catch(e => {
+		.action((...args) => {
+			return action(...args).catch(e => {
 				if (e) {
 					error(e);
 				}
@@ -132,7 +132,7 @@ async function action(filePath) {
 			} else if (volumesWithName.length === 1) {
 				decisions.chosenVolume = volumesWithName[0];
 			} else {
-				// todo: choose which of these to go with
+				// TODO: choose which of these to go with
 			}
 		} else {
 			await chooseVolume({deploymentDefinition, digitalOceanApi, decisions});
