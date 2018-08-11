@@ -75,6 +75,7 @@ nodecg deploy example.yml
 ---
 debug: true
 secure: true
+nodejs_version: '6'
 domain: subdomain.example.com
 email: YOUR_EMAIL_ADDRESS
 droplet:

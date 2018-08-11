@@ -11,7 +11,7 @@ properties:
     default: true
   nodejs_version:
     type: string
-    default: '6'
+    default: '10'
     required: true
   domain:
     type: string
